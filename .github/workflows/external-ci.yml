@@ -1,0 +1,78 @@
+name: external-ci
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Commit SHA in the main repo to build'
+        required: true
+        type: string
+      pr:
+        description: 'Pull request number (empty for pushes)'
+        required: false
+        type: string
+        default: ''
+
+env:
+  MAIN_REPO: MLG-SERBUR/gp-webhook-ci-demo-main
+  STATUS_CONTEXT: ci/demo
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.MAIN_REPO_PAT }}
+      SHA: ${{ inputs.sha }}
+    steps:
+      - name: Mark commit as pending
+        run: |
+          gh api "repos/$MAIN_REPO/statuses/$SHA" \
+            -f state=pending \
+            -f context="$STATUS_CONTEXT" \
+            -f description="Build started" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Check out main repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MAIN_REPO }}
+          ref: main
+          token: ${{ secrets.MAIN_REPO_PAT }}
+
+      - name: Fetch and verify target commit
+        run: |
+          if [ -n "${{ inputs.pr }}" ]; then
+            git fetch origin "pull/${{ inputs.pr }}/head:pr-head"
+          else
+            git fetch origin "${{ inputs.sha }}"
+          fi
+          git checkout "${{ inputs.sha }}"
+          test "$(git rev-parse HEAD)" = "${{ inputs.sha }}"
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: 25
+          distribution: temurin
+          cache: maven
+
+      - name: Build and test
+        run: mvn --batch-mode verify
+
+      - name: Mark commit as success
+        if: success()
+        run: |
+          gh api "repos/$MAIN_REPO/statuses/$SHA" \
+            -f state=success \
+            -f context="$STATUS_CONTEXT" \
+            -f description="Build passed" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Mark commit as failure
+        if: failure()
+        run: |
+          gh api "repos/$MAIN_REPO/statuses/$SHA" \
+            -f state=failure \
+            -f context="$STATUS_CONTEXT" \
+            -f description="Build failed" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
